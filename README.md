@@ -30,7 +30,9 @@ streamlit run app.py
 ```
 
 ## 구조
+```
 langchain-rag/
 ├── stock_news_rag.ipynb   
 ├── app.py           # Streamlit UI
 └── chroma_db/       # 벡터 DB (로컬 저장)
+```
