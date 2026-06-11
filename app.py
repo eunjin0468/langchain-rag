@@ -205,17 +205,19 @@ st.set_page_config(page_title="📈 뉴스 기반 종목 이슈 탐색기", layo
 st.title("📈 뉴스 기반 종목 이슈 탐색기")
 st.caption("종목명을 입력하면 최신 뉴스를 분석해 AI가 이슈를 요약해드려요!")
 
-col1, col2 = st.columns([3, 1])
-with col1:
-    stock_input = st.text_input("🔍 종목명 입력", placeholder="예: 삼성전자 / 엔비디아 / TSLA / 005930")
-with col2:
-    num_articles = st.slider("수집 기사 수", min_value=5, max_value=30, value=20)
+# ✅ form으로 감싸서 엔터/버튼 둘 다 작동
+with st.form("search_form"):
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        stock_input = st.text_input("🔍 종목명 입력", placeholder="예: 삼성전자 / 엔비디아 / TSLA / 005930")
+    with col2:
+        num_articles = st.slider("수집 기사 수", min_value=5, max_value=30, value=20)
+    submitted = st.form_submit_button("🚀 분석 시작")
 
-if st.button("🚀 분석 시작"):
+if submitted:
     if not stock_input:
         st.warning("종목명을 입력해주세요!")
     else:
-        # 1. 종목 검색
         with st.spinner("🔍 종목 검색 중..."):
             result = search_stock(stock_input.strip())
         
@@ -224,7 +226,6 @@ if st.button("🚀 분석 시작"):
         else:
             st.success(f"✅ {'[국내]' if result['type'] == 'KR' else '[해외]'} {result['name']} → {result['code']}")
             
-            # 2. 뉴스 수집
             with st.spinner("📰 뉴스 수집 중..."):
                 news = get_news(result, num_articles)
             
@@ -233,24 +234,20 @@ if st.button("🚀 분석 시작"):
             else:
                 st.info(f"📄 총 {len(news)}개 기사 수집 완료!")
                 
-                # 3. 벡터 저장
                 with st.spinner("🗄️ 벡터 저장 중..."):
                     vectorstore = store_to_chromadb(news, result["name"], result["code"])
                 
                 if not vectorstore:
                     st.error("본문이 있는 기사가 없어요!")
                 else:
-                    # 4. RAG 분석
                     with st.spinner("🤖 AI 분석 중..."):
                         chain = build_rag_chain(vectorstore)
                         query = f"{result['name']} 최근 주요 이슈는?"
                         answer = chain.invoke({"query": query})
                     
-                    # 5. 결과 출력
                     st.subheader("📊 AI 분석 결과")
                     st.write(answer["result"])
                     
-                    # 6. 수집된 기사 목록
                     with st.expander("📰 수집된 기사 목록 보기"):
                         for i, n in enumerate(news):
                             st.markdown(f"**{i+1}. {n['title']}**")
