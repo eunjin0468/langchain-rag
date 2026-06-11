@@ -150,7 +150,7 @@ def get_news(stock_info, num_articles=20):
     else:
         return get_yahoo_news(stock_info["code"], num_articles)
 
-def get_stock_chart(stock_info):
+def get_stock_chart(stock_info, period="3mo"):
     try:
         if stock_info["type"] == "KR":
             ticker = stock_info["code"] + ".KS"
@@ -158,7 +158,7 @@ def get_stock_chart(stock_info):
             ticker = stock_info["code"]
         
         stock = yf.Ticker(ticker)
-        df = stock.history(period="3mo")
+        df = stock.history(period=period)
         
         if df.empty:
             return None
@@ -330,15 +330,31 @@ with st.form("search_form"):
     col1, col2 = st.columns([3, 1])
     with col1:
         stock_input = st.text_input(
-            "어떤 종목이 궁금하세요?",  
+            "어떤 종목이 궁금하세요?",
             placeholder="삼성전자, 엔비디아, TSLA, 005930 …",
         )
     with col2:
         num_articles = st.slider("기사 몇 개 볼까요?", min_value=5, max_value=30, value=20)
+    
     query_input = st.text_input(
-    "어떤 게 궁금하세요?",
-    placeholder="최근 주요 이슈는? / 최근 실적은? / 리스크 요인은?",
+        "어떤 게 궁금하세요?",
+        placeholder="최근 주요 이슈는? / 최근 실적은? / 리스크 요인은?",
     )
+    
+    period_options = {
+        "1개월": "1mo",
+        "3개월": "3mo",
+        "6개월": "6mo",
+        "1년": "1y",
+        "올해": "ytd"
+    }
+    period_label = st.selectbox(
+        "차트 기간",
+        options=list(period_options.keys()),
+        index=1
+    )
+    period = period_options[period_label]
+    
     submitted = st.form_submit_button("분석하기")
 
 if submitted:
@@ -370,12 +386,12 @@ if submitted:
                         chain = build_rag_chain(vectorstore)
                         query = f"{result['name']} {query_input}"
                         answer = chain.invoke({"query": query})
-
+                    
                     col_chart, col_result = st.columns([1, 1])
-
+                    
                     with col_chart:
                         with st.spinner("차트 불러오는 중"):
-                            fig = get_stock_chart(result)
+                            fig = get_stock_chart(result, period)
                         if fig:
                             st.plotly_chart(fig, use_container_width=True)
                         else:
@@ -388,12 +404,19 @@ if submitted:
                                 {answer["result"].replace(chr(10), "<br>")}
                             </div>
                         """, unsafe_allow_html=True)
-
-                    with st.expander(f"수집된 기사 {len(news)}건"):
-                        for i, n in enumerate(news):
-                            st.markdown(f"""
-                                <div class="news-item">
-                                    <div class="news-title">{i+1}. {n['title']}</div>
-                                    <a class="news-link" href="{n['link']}" target="_blank">{n['link']}</a>
-                                </div>
-                            """, unsafe_allow_html=True)
+                        
+                        source_docs = answer.get("source_documents", [])
+                        if source_docs:
+                            with st.expander("📰 AI가 참고한 기사"):
+                                seen = set()
+                                for doc in source_docs:
+                                    title = doc.metadata.get("title", "")
+                                    link = doc.metadata.get("link", "")
+                                    if title not in seen:
+                                        seen.add(title)
+                                        st.markdown(f"""
+                                            <div class="news-item">
+                                                <div class="news-title">{title}</div>
+                                                <a class="news-link" href="{link}" target="_blank">{link}</a>
+                                            </div>
+                                        """, unsafe_allow_html=True)
