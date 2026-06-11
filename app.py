@@ -15,6 +15,9 @@ from langchain_core.prompts import PromptTemplate
 from langchain_ollama import OllamaLLM
 from langchain_classic.chains import RetrievalQA
 import yfinance as yf
+import plotly.graph_objects as go
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
 
 # ========== 종목 검색 ==========
 def is_korean(text):
@@ -52,7 +55,6 @@ def get_yahoo_ticker(query):
 def search_stock(stock_name):
     if stock_name.isdigit() and len(stock_name) == 6:
         return {"type": "KR", "code": stock_name, "name": stock_name}
-    
     if is_korean(stock_name):
         code = get_stock_code(stock_name)
         if code:
@@ -88,7 +90,7 @@ def get_article_body(url):
         for selector in ["div#dic_area", "div.newsct_article", "div#news_read", "div#contents"]:
             body = soup.select_one(selector)
             if body and body.text.strip():
-                return body.text.strip()[:500]
+                return body.text.strip()
         return ""
     except:
         return ""
@@ -148,15 +150,52 @@ def get_news(stock_info, num_articles=20):
     else:
         return get_yahoo_news(stock_info["code"], num_articles)
 
+def get_stock_chart(stock_info):
+    try:
+        if stock_info["type"] == "KR":
+            ticker = stock_info["code"] + ".KS"
+        else:
+            ticker = stock_info["code"]
+        
+        stock = yf.Ticker(ticker)
+        df = stock.history(period="3mo")
+        
+        if df.empty:
+            return None
+        
+        fig = go.Figure()
+        fig.add_trace(go.Candlestick(
+            x=df.index,
+            open=df["Open"],
+            high=df["High"],
+            low=df["Low"],
+            close=df["Close"],
+            name="주가"
+        ))
+        fig.update_layout(
+            title=f"{stock_info['name']} 3개월 주가",
+            xaxis_rangeslider_visible=False,
+            height=400
+        )
+        return fig
+    except:
+        return None
+    
 # ========== ChromaDB 저장 ==========
 def store_to_chromadb(news_list, stock_name, stock_code):
-    docs = [
-        Document(
-            page_content=f"{news['title']}\n{news['body']}",
-            metadata={"title": news["title"], "link": news["link"]}
-        )
-        for news in news_list if news["body"]
-    ]
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=300,
+        chunk_overlap=50
+    )
+    docs = []
+    for news in news_list:
+        if news["body"]:
+            chunks = splitter.split_text(news["body"])
+            for chunk in chunks:
+                docs.append(Document(
+                    page_content=chunk,
+                    metadata={"title": news["title"], "link": news["link"]}
+                ))
     if not docs:
         return None
     embedding_model = HuggingFaceEmbeddings(
@@ -171,7 +210,7 @@ def store_to_chromadb(news_list, stock_name, stock_code):
         collection_name=f"news_{stock_code}"
     )
     return vectorstore
-
+    
 # ========== RAG 체인 ==========
 def build_rag_chain(vectorstore):
     llm = OllamaLLM(model="llama3.2", temperature=0.1)
@@ -201,54 +240,160 @@ def build_rag_chain(vectorstore):
     return qa_chain
 
 # ========== Streamlit UI ==========
-st.set_page_config(page_title="📈 뉴스 기반 종목 이슈 탐색기", layout="wide")
-st.title("📈 뉴스 기반 종목 이슈 탐색기")
-st.caption("종목명을 입력하면 최신 뉴스를 분석해 AI가 이슈를 요약해드려요!")
+st.set_page_config(
+    page_title="StockLens",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
 
-# ✅ form으로 감싸서 엔터/버튼 둘 다 작동
+css = """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Pretendard:wght@400;500;600;700&display=swap');
+
+    html, body, [class*="css"] {
+        font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    .hero {
+        padding-top: 48px;
+        padding-bottom: 32px;
+        text-align: center;
+    }
+    .hero h1 {
+        font-size: 2.4rem;
+        font-weight: 700;
+        letter-spacing: -0.5px;
+        margin-bottom: 8px;
+    }
+    .hero p {
+        font-size: 1.05rem;
+        opacity: 0.6;
+        font-weight: 400;
+    }
+
+    .result-card {
+        border-radius: 16px;
+        padding: 28px 32px;
+        margin-top: 24px;
+        border: 1px solid rgba(128,128,128,0.15);
+        font-size: 0.97rem;
+        line-height: 1.8;
+    }
+
+    .result-label {
+        font-size: 0.8rem;
+        font-weight: 600;
+        color: #0066CC;
+        text-transform: uppercase;
+        letter-spacing: 0.8px;
+        margin-bottom: 10px;
+    }
+
+    .news-item {
+        padding-top: 14px;
+        padding-bottom: 14px;
+        border-bottom: 1px solid rgba(128,128,128,0.15);
+    }
+    .news-item:last-child { border-bottom: none; }
+    .news-title {
+        font-size: 0.93rem;
+        font-weight: 500;
+    }
+    .news-link {
+        font-size: 0.8rem;
+        color: #0066CC;
+        text-decoration: none;
+    }
+
+    .badge {
+        display: inline-block;
+        background: rgba(0,102,204,0.12);
+        color: #0066CC;
+        border-radius: 20px;
+        padding: 4px 12px;
+        font-size: 0.8rem;
+        font-weight: 600;
+        margin-bottom: 16px;
+    }
+    </style>
+"""
+st.markdown(css, unsafe_allow_html=True)
+
+st.markdown("""
+    <div class="hero">
+        <h1>AI가 읽은 오늘의 종목, 한눈에 보기</h1>
+        <p>궁금한 종목, 지금 바로 분석해보세요</p>
+    </div>
+""", unsafe_allow_html=True)
+
 with st.form("search_form"):
     col1, col2 = st.columns([3, 1])
     with col1:
-        stock_input = st.text_input("🔍 종목명 입력", placeholder="예: 삼성전자 / 엔비디아 / TSLA / 005930")
+        stock_input = st.text_input(
+            "어떤 종목이 궁금하세요?",  
+            placeholder="삼성전자, 엔비디아, TSLA, 005930 …",
+        )
     with col2:
-        num_articles = st.slider("수집 기사 수", min_value=5, max_value=30, value=20)
-    submitted = st.form_submit_button("🚀 분석 시작")
+        num_articles = st.slider("기사 몇 개 볼까요?", min_value=5, max_value=30, value=20)
+    query_input = st.text_input(
+    "어떤 게 궁금하세요?",
+    placeholder="최근 주요 이슈는? / 최근 실적은? / 리스크 요인은?",
+    )
+    submitted = st.form_submit_button("분석하기")
 
 if submitted:
     if not stock_input:
         st.warning("종목명을 입력해주세요!")
     else:
-        with st.spinner("🔍 종목 검색 중..."):
+        with st.spinner("종목 찾는 중 ..."):
             result = search_stock(stock_input.strip())
-        
+
         if not result:
-            st.error(f"'{stock_input}' 종목을 찾을 수 없어요. 영문명이나 티커로 다시 시도해보세요!")
+            st.error(f"'{stock_input}' 해당 종목을 찾지 못했어요. 다른 이름이나 티커로 시도해보세요.")
         else:
-            st.success(f"✅ {'[국내]' if result['type'] == 'KR' else '[해외]'} {result['name']} → {result['code']}")
-            
-            with st.spinner("📰 뉴스 수집 중..."):
+            market = "국내" if result["type"] == "KR" else "해외"
+            st.markdown(f'<div class="badge">{market} · {result["code"]}</div>', unsafe_allow_html=True)
+
+            with st.spinner("뉴스 긁어오는 중 ..."):
                 news = get_news(result, num_articles)
-            
+
             if not news:
-                st.error("뉴스를 가져오지 못했어요!")
+                st.error("뉴스를 불러오지 못했어요. 잠시 후 다시 시도해주세요.")
             else:
-                st.info(f"📄 총 {len(news)}개 기사 수집 완료!")
-                
-                with st.spinner("🗄️ 벡터 저장 중..."):
+                with st.spinner("AI가 읽는 중 ..."):
                     vectorstore = store_to_chromadb(news, result["name"], result["code"])
-                
+
                 if not vectorstore:
-                    st.error("본문이 있는 기사가 없어요!")
+                    st.error("본문이 있는 기사가 없어요.")
                 else:
-                    with st.spinner("🤖 AI 분석 중..."):
+                    with st.spinner("답변 만드는 중 ..."):
                         chain = build_rag_chain(vectorstore)
-                        query = f"{result['name']} 최근 주요 이슈는?"
+                        query = f"{result['name']} {query_input}"
                         answer = chain.invoke({"query": query})
+
+                    col_chart, col_result = st.columns([1, 1])
+
+                    with col_chart:
+                        with st.spinner("차트 불러오는 중"):
+                            fig = get_stock_chart(result)
+                        if fig:
+                            st.plotly_chart(fig, use_container_width=True)
+                        else:
+                            st.info("차트 데이터를 불러오지 못했어요.")
                     
-                    st.subheader("📊 AI 분석 결과")
-                    st.write(answer["result"])
-                    
-                    with st.expander("📰 수집된 기사 목록 보기"):
+                    with col_result:
+                        st.markdown(f"""
+                            <div class="result-card">
+                                <div class="result-label">AI 분석</div>
+                                {answer["result"].replace(chr(10), "<br>")}
+                            </div>
+                        """, unsafe_allow_html=True)
+
+                    with st.expander(f"수집된 기사 {len(news)}건"):
                         for i, n in enumerate(news):
-                            st.markdown(f"**{i+1}. {n['title']}**")
-                            st.caption(n["link"])
+                            st.markdown(f"""
+                                <div class="news-item">
+                                    <div class="news-title">{i+1}. {n['title']}</div>
+                                    <a class="news-link" href="{n['link']}" target="_blank">{n['link']}</a>
+                                </div>
+                            """, unsafe_allow_html=True)
